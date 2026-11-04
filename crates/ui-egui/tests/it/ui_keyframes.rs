@@ -598,3 +598,62 @@ fn speed_graph_fit_selection_frames_the_curve_between_the_keys() {
     click_with(&mut h, pos2(fit[0] + fit[2] / 2.0, fit[1] + fit[3] / 2.0), Default::default());
     frames_peak(&h, "lone key");
 }
+
+/// A right-click on a key at `p`, then a click on the menu entry `entry`.
+fn key_menu(h: &mut Harness<'_, EffectcraftApp>, p: Pos2, entry: &str) {
+    use egui_kittest::kittest::Queryable as _;
+    for pressed in [true, false] {
+        h.input_mut().events.push(Event::PointerMoved(p));
+        h.input_mut().events.push(Event::PointerButton { pos: p, button: egui::PointerButton::Secondary, pressed, modifiers: Default::default() });
+        h.step();
+    }
+    h.run_steps(3);
+    let at = h.query_by_label(entry).unwrap_or_else(|| panic!("the key menu has {entry}")).rect().center();
+    click_with(h, at, Default::default());
+}
+
+/// The key menu changes a key's interpolation every time, not only the first (#2213): Easy Ease
+/// Out, then Easy Ease In on the same key, then Linear.
+#[test]
+fn the_key_menu_changes_interpolation_again_after_the_first_change() {
+    use effectcraft_engine::keyframe::Interp;
+    let (mut h, id, uid) = harness();
+    let key =
+        |h: &Harness<'_, EffectcraftApp>| h.state().session.active_comp().unwrap().layer(id).unwrap().props.prop("transform/opacity").unwrap().keys[1].clone();
+    let at = keys(&h, uid)[1];
+    key_menu(&mut h, at, "Easy Ease Out");
+    assert_eq!((key(&h).in_interp, key(&h).out_interp), (Interp::Linear, Interp::Bezier), "Easy Ease Out");
+    key_menu(&mut h, at, "Easy Ease In");
+    assert_eq!((key(&h).in_interp, key(&h).out_interp), (Interp::Bezier, Interp::Bezier), "then Easy Ease In");
+    key_menu(&mut h, at, "Linear");
+    assert_eq!((key(&h).in_interp, key(&h).out_interp), (Interp::Linear, Interp::Linear), "then Linear");
+}
+
+/// #2213 as reported: the first of two Position keys on a shape layer.
+#[test]
+fn the_key_menu_changes_a_shape_layers_first_position_key_again() {
+    use effectcraft_engine::keyframe::Interp;
+    let mut s = Session::default();
+    s.execute("comp.new", json!({"name": "Keys", "width": 320, "height": 180, "frameRate": 30, "duration": 4})).unwrap();
+    let id = LayerId(s.execute("layer.newShape", json!({})).unwrap()["layer"].as_u64().unwrap());
+    for (t, v) in [(0.0, json!([40, 90])), (1.0, json!([280, 90]))] {
+        s.execute("prop.addKey", json!({"layer": id.0, "path": "transform/position", "time": t, "value": v})).unwrap();
+    }
+    let uid = s.active_comp().unwrap().layer(id).unwrap().props.prop("transform/position").unwrap().uid;
+    s.execute("layer.select", json!({"layers": [id.0]})).unwrap();
+    let mut h = Harness::builder().with_size(egui::vec2(1600.0, 1000.0)).build_eframe(|_| EffectcraftApp::new(s));
+    h.run_steps(3);
+    let ctx = h.ctx.clone();
+    effectcraft_ui_egui::menus::invoke(h.state_mut(), &ctx, "timeline.reveal.position", json!({})).unwrap();
+    h.run_steps(4);
+    let key =
+        |h: &Harness<'_, EffectcraftApp>| h.state().session.active_comp().unwrap().layer(id).unwrap().props.prop("transform/position").unwrap().keys[0].clone();
+    let sides = |h: &Harness<'_, EffectcraftApp>| (key(h).in_interp, key(h).out_interp);
+    let at = keys(&h, uid)[0];
+    key_menu(&mut h, at, "Easy Ease Out");
+    assert_eq!(sides(&h).1, Interp::Bezier, "Easy Ease Out");
+    key_menu(&mut h, at, "Easy Ease In");
+    assert_eq!(sides(&h), (Interp::Bezier, Interp::Bezier), "then Easy Ease In");
+    key_menu(&mut h, at, "Linear");
+    assert_eq!(sides(&h), (Interp::Linear, Interp::Linear), "then Linear");
+}
